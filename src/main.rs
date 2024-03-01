@@ -48,7 +48,7 @@ fn main() {
     loop {
         match mainloop.borrow_mut().iterate(false) {
             IterateResult::Err(_) | IterateResult::Quit(_) => {
-                eprintln!("Iterate state was not success, qutting...");
+                eprintln!("Iterate state was not success, qutting.");
                 return;
             }
             IterateResult::Success(_) => {}
@@ -59,7 +59,7 @@ fn main() {
                 break;
             }
             pulse::context::State::Failed | pulse::context::State::Terminated => {
-                eprintln!("Context state failed/terminated, quitting...");
+                eprintln!("Context state failed/terminated, quitting.");
                 return;
             }
             _ => {}
@@ -74,21 +74,24 @@ fn main() {
 
     println!("Getting sink.");
     let sink = get_sink(mainloop.clone(), context.clone());
-
     println!("Using sink {}.", sink);
 
     stream.borrow_mut().set_monitor_stream(sink).unwrap();
 
+    println!("Getting source.");
+    let source = get_source(mainloop.clone(), context.clone());
+    println!("Using source {}.", source);
+
     stream
         .borrow_mut()
-        .connect_record(None, None, StreamFlagSet::START_CORKED)
+        .connect_record(Some(&source), None, StreamFlagSet::START_CORKED)
         .unwrap();
 
     // Wait for stream to be ready
     loop {
         match mainloop.borrow_mut().iterate(false) {
             IterateResult::Quit(_) | IterateResult::Err(_) => {
-                eprintln!("Iterate state was not success, quitting...");
+                eprintln!("Iterate state was not success, quitting.");
                 return;
             }
             IterateResult::Success(_) => {}
@@ -98,7 +101,7 @@ fn main() {
                 break;
             }
             pulse::stream::State::Failed | pulse::stream::State::Terminated => {
-                eprintln!("Stream state failed/terminated, quitting...");
+                eprintln!("Stream state failed/terminated, quitting.");
                 return;
             }
             _ => {}
@@ -135,6 +138,7 @@ fn main() {
                     stream.borrow_mut().discard().unwrap();
                 }
                 pulse::stream::PeekResult::Data(data) => {
+                    println!("Received {} bytes of data: {:?}", data.len(), data);
                     if !data.iter().all(|&x| x == 0) {
                         println!("Received {} bytes of data: {:?}", data.len(), data);
                     }
@@ -183,6 +187,46 @@ fn get_sink(mainloop: Rc<RefCell<Mainloop>>, context: Rc<RefCell<Context>>) -> u
 
         match rx.try_recv() {
             Ok(sink) => break sink,
+            Err(err) => match err {
+                TryRecvError::Empty => {}
+                TryRecvError::Disconnected => panic!("Empty channel."),
+            },
+        }
+    }
+}
+
+fn get_source(mainloop: Rc<RefCell<Mainloop>>, context: Rc<RefCell<Context>>) -> String {
+    let (tx, rx): (Sender<String>, Receiver<String>) = mpsc::channel();
+    context
+        .borrow_mut()
+        .introspect()
+        .get_source_info_list(move |result| match result {
+            pulse::callbacks::ListResult::Item(item) => {
+                if item.name.clone().unwrap().contains("FiiO") {
+                    tx.send(item.name.clone().unwrap().to_string()).unwrap();
+                }
+            }
+            pulse::callbacks::ListResult::End => {}
+            pulse::callbacks::ListResult::Error => eprintln!("Error getting source info list."),
+        });
+
+    loop {
+        match mainloop.borrow_mut().iterate(false) {
+            IterateResult::Err(_) | IterateResult::Quit(_) => {
+                panic!("Iterate state was not success, qutting...");
+            }
+            IterateResult::Success(_) => {}
+        }
+
+        match context.borrow().get_state() {
+            pulse::context::State::Failed | pulse::context::State::Terminated => {
+                panic!("Context state failed/terminated, quitting...");
+            }
+            _ => {}
+        }
+
+        match rx.try_recv() {
+            Ok(source) => break source,
             Err(err) => match err {
                 TryRecvError::Empty => {}
                 TryRecvError::Disconnected => panic!("Empty channel."),
